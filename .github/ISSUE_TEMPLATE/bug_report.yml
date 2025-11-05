@@ -1,0 +1,22 @@
+name: 🐛 Bug Report
+description: 버그 발생 시 작성해주세요
+labels: [bug]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: 문제 설명
+      description: 어떤 문제가 발생했는지 자세히 적어주세요.
+      placeholder: "버튼 클릭 시 페이지가 로드되지 않습니다."
+  - type: textarea
+    id: steps
+    attributes:
+      label: 재현 방법
+      description: 어떤 과정을 거쳤을 때 버그가 발생했나요?
+      placeholder: "1. 로그인\n2. 상품 목록 클릭\n3. 오류 발생"
+  - type: input
+    id: environment
+    attributes:
+      label: 환경 정보
+      description: 브라우저, OS 등 환경을 적어주세요.
+      placeholder: "Windows 11 / Chrome 118"
