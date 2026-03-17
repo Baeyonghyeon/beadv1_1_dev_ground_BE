@@ -2,6 +2,7 @@ package io.devground.payments.settlement.batch.reader;
 
 import java.util.List;
 
+import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.item.ItemReader;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -18,6 +19,7 @@ import lombok.extern.slf4j.Slf4j;
  */
 @Slf4j
 @Component
+@StepScope
 @RequiredArgsConstructor
 public class SettlementDepositReader implements ItemReader<Settlement> {
 
