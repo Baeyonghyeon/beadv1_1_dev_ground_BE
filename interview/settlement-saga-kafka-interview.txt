@@ -1,0 +1,153 @@
+면접용 정리 - Settlement MSA / Kafka / Saga 흐름
+작성일: 2026-02-19
+
+================================================================
+0) 먼저 한 줄로 설명하면
+================================================================
+"정산 배치의 입금 단계에서 Settlement Deposit Charge Saga를 시작하고,
+Kafka로 Deposit 충전 커맨드를 보내 성공 이벤트를 받아 최종 정산 완료 이벤트를 발행하는 구조입니다."
+
+적용된 Saga 타입:
+- SETTLEMENT_DEPOSIT_CHARGE
+- 근거: payments/common/saga/vo/SagaType.java
+
+================================================================
+1) [그림] 어떤 Saga가 적용됐는지 (Settlement Saga 흐름도)
+================================================================
+
+[Batch depositStep]
+  SettlementDepositProcessor
+  (sellerCode, settlementBalance, orderCode)
+      |
+      | convert
+      v
+  SettlementChargeDeposit
+  { userCode=sellerCode, amount=settlementBalance, orderCode }
+      |
+      v
+[SettlementDepositWriter]
+      |
+      v
+[SettlementSagaOrchestrator.startSettlementDepositChargeSaga]
+  1) sagaService.startSaga(referenceCode=orderCode, type=SETTLEMENT_DEPOSIT_CHARGE)
+     - 최초: INIT 생성
+     - 진행 중 Saga 존재 시 재사용
+  2) Kafka command 발행 (deposits-commands)
+  3) SagaStep -> SETTLEMENT_COMMAND_SENT
+      |
+      v
+[DepositKafkaConsumer.handleSettlementChargeCommand]
+  4) Deposit 충전 처리(DepositHistoryType.SETTLEMENT)
+  5) 성공 시 SettlementDepositChargedSuccess 이벤트 발행 (deposits-events)
+      |
+      v
+[SettlementEventHandler]
+  6) deposits-events 수신 후 Orchestrator.handleDepositChargeSuccess 호출
+      |
+      v
+[SettlementSagaOrchestrator.handleDepositChargeSuccess]
+  7) SagaStep -> DEPOSIT_CHARGE_SUCCESS
+  8) SettlementCreatedSuccess{orderCodes=[orderCode]} 발행 (settlements-events)
+  9) SagaStep -> SETTLEMENT_EVENT_PUBLISHED
+ 10) SagaStatus -> SUCCESS, SagaStep -> COMPLETE
+
+최종 성공 스텝 체인:
+INIT -> SETTLEMENT_COMMAND_SENT -> DEPOSIT_CHARGE_SUCCESS -> SETTLEMENT_EVENT_PUBLISHED -> COMPLETE(SUCCESS)
+
+실패 분기(현재 구현):
+- command 발행 실패: updateToFail(...)로 Saga FAILED 처리
+- deposit charge 실패: DepositChargeFailed 발행은 있으나,
+  Settlement 전용 실패 이벤트/핸들러는 TODO 상태
+
+================================================================
+2) [면접용 설명] Saga 흐름을 말로 풀면
+================================================================
+
+"정산 배치의 depositStep에서 Settlement를 SettlementChargeDeposit 커맨드로 바꿉니다.
+이 커맨드를 오케스트레이터가 받아서 Saga를 시작하고 deposits-commands 토픽으로 보냅니다.
+Deposit 쪽 소비자가 실제 예치금 충전을 수행하고 성공 이벤트를 deposits-events로 발행하면,
+Settlement 이벤트 핸들러가 그 이벤트를 받아 오케스트레이터에 전달합니다.
+오케스트레이터는 Saga 스텝을 성공 단계로 업데이트하고,
+마지막으로 settlements-events에 SettlementCreatedSuccess를 발행한 뒤 Saga를 SUCCESS로 종료합니다."
+
+================================================================
+3) [그림] Kafka 동작 과정 + 어떤 값이 넘어가는지
+================================================================
+
+(Topic names)
+- deposits.command.topic.name = deposits-commands
+- deposits.event.topic.name   = deposits-events
+- settlements.event.topic.name = settlements-events
+
+A. Command 발행
+Settlement Orchestrator
+  -> Topic: deposits-commands
+  -> Key: null (send(topic, command))
+  -> Value: SettlementChargeDeposit
+     {
+       userCode: sellerCode,
+       amount: settlementBalance,
+       orderCode: orderCode
+     }
+
+B. Deposit 충전 성공 이벤트 발행
+DepositKafkaConsumer
+  -> Topic: deposits-events
+  -> Key: orderCode (send(topic, command.orderCode(), event))
+  -> Value: SettlementDepositChargedSuccess
+     {
+       userCode: depositHistory.userCode,
+       depositHistoryCode: depositHistory.code,
+       amount: depositHistory.amount,
+       balanceAfter: depositHistory.balanceAfter,
+       orderCode: command.orderCode
+     }
+
+C. 정산 완료 이벤트 발행
+Settlement Orchestrator
+  -> Topic: settlements-events
+  -> Key: null (send(topic, settlementEvent))
+  -> Value: SettlementCreatedSuccess
+     {
+       orderCodes: [orderCode]
+     }
+
+================================================================
+4) [면접용 설명] Kafka 값 전달을 말로 풀면
+================================================================
+
+"첫 번째 메시지는 deposits-commands로 나가고,
+판매자 코드(sellerCode)가 userCode로 매핑된 SettlementChargeDeposit이 실립니다.
+두 번째는 Deposit 처리 성공 후 deposits-events로 나오는데,
+여기서 orderCode를 key로 사용해서 이벤트를 보냅니다.
+페이로드에는 userCode, depositHistoryCode, amount, balanceAfter, orderCode가 들어갑니다.
+마지막으로 정산 완료를 알리는 SettlementCreatedSuccess를 settlements-events로 발행하고,
+orderCodes 리스트에 해당 orderCode를 담아 downstream 도메인이 후속처리할 수 있게 넘깁니다."
+
+================================================================
+5) 면접에서 같이 말하면 좋은 고도화 포인트
+================================================================
+
+1. 실패 이벤트 정합성
+- 현재 settlement 실패 시 DepositChargeFailed를 보내지만 orderCode가 없어 추적이 약합니다.
+- SettlementDepositChargeFailed(예: orderCode 포함) 이벤트를 별도 정의하면 보상/재처리가 쉬워집니다.
+
+2. 토픽 운영
+- settlements-events 토픽 생성 빈(Bean)이 코드상 명시되어 있지 않아,
+  운영 환경에서 사전 토픽 생성 정책을 명확히 가져가면 안전합니다.
+
+3. 정확한 재처리/보상
+- handleDepositChargeFailure 경로를 실제 Kafka 실패 이벤트와 연결하면,
+  Saga FAILED/COMPENSATING 분기가 더 명확해집니다.
+
+================================================================
+6) 40초 답변 스크립트
+================================================================
+
+"정산에는 Settlement Deposit Charge Saga를 적용했습니다.
+배치 depositStep에서 정산 엔티티를 SettlementChargeDeposit 커맨드로 바꿔서
+deposits-commands로 발행하고, Deposit 서비스가 충전 성공 이벤트를 deposits-events로 보냅니다.
+Settlement 쪽은 이 이벤트를 받아 Saga 스텝을 업데이트하고,
+마지막으로 settlements-events에 SettlementCreatedSuccess를 발행한 뒤
+Saga를 SUCCESS로 종료합니다.
+핵심 전달값은 userCode, amount, orderCode, depositHistoryCode, balanceAfter입니다."

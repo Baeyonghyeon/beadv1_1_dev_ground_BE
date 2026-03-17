@@ -1,0 +1,351 @@
+면접용 패키지 - Settlement Orchestrator (MSA/Kafka/Saga)
+작성일: 2026-02-19
+
+================================================================
+1) 오케스트레이터를 왜 넣었는가?
+================================================================
+
+핵심 이유를 한 줄로 말하면:
+- "정산 입금 프로세스의 상태를 중앙에서 추적하고, 실패/재시도/완료를 일관되게 통제하기 위해" 넣었습니다.
+
+배경 문제:
+- 정산은 최소 2개 이상의 경계를 넘습니다.
+  1) Settlement 배치/사가 시작
+  2) Deposit 충전 처리
+  3) 정산 완료 이벤트 발행(다른 도메인 후속 처리)
+- 이걸 choreography(각 서비스가 알아서 연쇄 반응)로만 두면,
+  어디서 실패했는지/현재 단계가 뭔지/최종 성공인지를 추적하기 어려워집니다.
+
+오케스트레이터 도입 효과:
+- SagaStep/SagaStatus를 중앙에서 관리
+- referenceCode(orderCode) 기준 추적 가능
+- 단계별 성공/실패 로그와 상태 전이가 명확
+- 운영자가 "어디서 멈췄는지"를 바로 파악 가능
+
+================================================================
+2) 어떤 오케스트레이터가 적용됐는가?
+================================================================
+
+적용 Saga 타입:
+- SETTLEMENT_DEPOSIT_CHARGE
+- 근거: payments/common/saga/vo/SagaType.java
+
+주요 스텝:
+- INIT
+- SETTLEMENT_COMMAND_SENT
+- DEPOSIT_CHARGE_SUCCESS
+- SETTLEMENT_EVENT_PUBLISHED
+- COMPLETE (상태 SUCCESS)
+- 근거: payments/common/saga/vo/SagaStep.java, SagaService.updateToSuccess
+
+================================================================
+3) [그림] 오케스트레이터 동작 흐름도
+================================================================
+
+[Batch depositStep]
+SettlementDepositProcessor
+  Settlement -> SettlementChargeDeposit(userCode=sellerCode, amount=settlementBalance, orderCode)
+        |
+        v
+SettlementDepositWriter
+        |
+        v
+SettlementSagaOrchestrator.startSettlementDepositChargeSaga(command)
+  1) sagaService.startSaga(orderCode, SETTLEMENT_DEPOSIT_CHARGE)
+  2) Kafka send -> deposits-commands (key 없음)
+  3) SagaStep = SETTLEMENT_COMMAND_SENT
+        |
+        v
+DepositKafkaConsumer.handleSettlementChargeCommand(command)
+  4) depositEventApplication.charge(..., SETTLEMENT, amount)
+  5) 성공 이벤트 발행 -> deposits-events (key=orderCode)
+     SettlementDepositChargedSuccess{userCode, depositHistoryCode, amount, balanceAfter, orderCode}
+        |
+        v
+SettlementEventHandler(@KafkaListener deposits-events)
+  6) SettlementDepositChargedSuccess 수신
+  7) orchestrator.handleDepositChargeSuccess(event)
+        |
+        v
+SettlementSagaOrchestrator.handleDepositChargeSuccess(event)
+  8) SagaStep = DEPOSIT_CHARGE_SUCCESS
+  9) settlements-events 발행
+     SettlementCreatedSuccess{orderCodes=[orderCode]}
+ 10) SagaStep = SETTLEMENT_EVENT_PUBLISHED
+ 11) SagaStatus = SUCCESS, SagaStep = COMPLETE
+
+실패 경로(현재 구현):
+- command 발행 실패: updateToFail(...)
+- deposit 충전 실패 시 DepositChargeFailed 이벤트 발행은 있으나,
+  settlement 전용 실패 이벤트/핸들러 연계는 TODO 수준
+
+================================================================
+4) [그림] 오케스트레이터 상태 전이도 (State)
+================================================================
+
+IN_PROCESS
+  |
+  | startSaga
+  v
+INIT
+  |
+  | deposits-commands 발행 성공
+  v
+SETTLEMENT_COMMAND_SENT
+  |
+  | deposits-events 성공 이벤트 수신
+  v
+DEPOSIT_CHARGE_SUCCESS
+  |
+  | settlements-events 발행 성공
+  v
+SETTLEMENT_EVENT_PUBLISHED
+  |
+  | updateToSuccess
+  v
+COMPLETE + SUCCESS(terminal)
+
+예외:
+- 어느 단계든 오류 시 updateToFail -> FAILED(terminal)
+- 보상 상태 enum/메서드는 있으나 settlement 보상 트랜잭션은 미구현(TODO)
+
+================================================================
+5) [그림] Kafka에서 실제로 넘어가는 값
+================================================================
+
+A) Settlement -> Deposit (Command)
+- Topic: deposits-commands
+- Key: null (send(topic, command))
+- Value: SettlementChargeDeposit
+  {
+    userCode: sellerCode,
+    amount: settlementBalance,
+    orderCode: orderCode
+  }
+
+B) Deposit -> Settlement (Success Event)
+- Topic: deposits-events
+- Key: orderCode
+- Value: SettlementDepositChargedSuccess
+  {
+    userCode,
+    depositHistoryCode,
+    amount,
+    balanceAfter,
+    orderCode
+  }
+
+C) Settlement -> Downstream (Complete Event)
+- Topic: settlements-events
+- Key: null (send(topic, settlementEvent))
+- Value: SettlementCreatedSuccess
+  {
+    orderCodes: [orderCode]
+  }
+
+================================================================
+6) [추가] Kafka 이벤트 실패 처리 + DLT 정리
+================================================================
+
+6-1. 현재 공통 에러 핸들러 동작
+- 공통 KafkaErrorHandler에서 DefaultErrorHandler + DeadLetterPublishingRecoverer 사용
+- 재시도: 최대 5회, 지수 백오프
+- 최종 실패: <원본토픽>.DLT 로 전송
+- 역직렬화 실패(DeserializationException)는 non-retryable로 즉시 DLT 전송
+- 근거: payments/common/kafka/KafkaErrorHandler.java
+
+6-2. [그림] DLT 처리 흐름
+
+Consumer(@KafkaListener)
+   |
+   | 처리 중 예외 발생(throw)
+   v
+DefaultErrorHandler
+   |
+   | retry #1 ... retry #5 (exponential backoff)
+   v
+실패 지속
+   |
+   v
+DeadLetterPublishingRecoverer
+   |
+   | Topic 변환: originalTopic -> originalTopic.DLT
+   | Partition: 원본 partition 유지
+   v
+DLT 적재 완료
+
+6-3. 실패 처리 "예시" (면접에서 말하기 좋은 실제 기준)
+
+예시 A) 역직렬화 실패
+- 상황: deposits-events에 예상 스키마와 다른 JSON이 들어옴
+- 결과:
+  1) DeserializationException 발생
+  2) non-retryable 정책으로 즉시 DLT 전송
+  3) 예: deposits-events -> deposits-events.DLT
+
+예시 B) 리스너 내부에서 uncaught 예외 발생
+- 상황: @KafkaHandler에서 NPE 등 예외를 throw하고 밖으로 전파됨
+- 결과:
+  1) DefaultErrorHandler가 5회 재시도
+  2) 계속 실패 시 <topic>.DLT 전송
+
+예시 C) 현재 Settlement 코드의 실무 포인트
+- SettlementEventHandler, DepositKafkaConsumer는 대부분 내부 try-catch로 예외를 잡고 로그/실패 이벤트 처리함
+- 즉 "핸들러 내부에서 잡아버린 예외"는 컨테이너 관점 실패가 아니어서 DLT로 가지 않을 수 있음
+- 면접에서 이 차이를 설명하면 이해도 높게 보입니다.
+
+6-4. 운영 포인트
+- 현재 allow.auto.create.topics=false 이므로 DLT 토픽 사전 생성 필요
+- DLT 적재 후 재처리(runbook) 체계가 있어야 실제 운영이 완성됨
+
+6-5. \"DLT에 빠진 뒤 누가 처리하나?\" (현재 기준)
+- 현재 코드에는 DLT 전용 @KafkaListener(자동 재처리 컨슈머)가 없습니다.
+- 그래서 지금 운영 방식은 \"자동 적재 + 수동 복구\"에 가깝습니다.
+  1) 개발자/운영자가 DLT 로그/모니터링 알람 확인
+  2) 실패 원인 분류(역직렬화/비즈니스 검증/일시 장애)
+  3) 코드/데이터/설정 보정
+  4) 필요 시 메시지 수동 재발행 또는 재처리 배치 실행
+- 면접에서 이렇게 답하면 됩니다:
+  \"현재는 DLT 적재까지 자동이고, 복구는 운영자가 원인 확인 후 수동 재처리합니다.
+   다음 단계로 DLT 컨슈머와 재처리 정책 자동화를 계획하고 있습니다.\"
+
+================================================================
+7) 면접에서 이렇게 말하면 좋다 (바로 읽는 스크립트)
+================================================================
+
+[30초 버전]
+"정산 입금은 Settlement Deposit Charge Saga로 관리했습니다.
+배치 depositStep에서 정산 데이터를 커맨드로 바꿔 deposits-commands로 보내고,
+Deposit 충전 성공 이벤트를 deposits-events로 받아 오케스트레이터가 스텝을 갱신합니다.
+실패한 Kafka 이벤트는 공통 에러 핸들러에서 재시도 후 DLT로 모읍니다."
+
+[1분 버전]
+"오케스트레이터를 둔 이유는 분산 트랜잭션 상태를 중앙에서 추적하기 위해서입니다.
+orderCode 기준 Saga를 시작/재사용하고,
+command 발행 후 SETTLEMENT_COMMAND_SENT, 성공 이벤트 수신 후 DEPOSIT_CHARGE_SUCCESS,
+완료 이벤트 발행 후 SETTLEMENT_EVENT_PUBLISHED와 SUCCESS로 종료합니다.
+Kafka 실패는 DefaultErrorHandler가 5회 재시도하고, 최종 실패 시 <topic>.DLT로 보냅니다.
+다만 코드에서 예외를 내부 try-catch로 처리하면 DLT까지 안 갈 수 있다는 점도 같이 관리하고 있습니다."
+
+================================================================
+8) 고도화 포인트 (실전 개선 제안)
+================================================================
+
+1. 실패 이벤트 정교화
+- 현재 실패 시 DepositChargeFailed(범용)만 발행.
+- Settlement 전용 실패 이벤트(예: SettlementDepositChargeFailed, orderCode 포함) 필요.
+
+2. 키 전략 일관화
+- 현재 command/complete 이벤트는 key가 없음.
+- orderCode key로 통일하면 파티션 ordering/traceability가 향상.
+
+3. Exactly-once/중복 방어
+- producer idempotence는 켜져 있지만,
+  consumer 측 idempotent 처리(중복 이벤트 감지 키 저장)까지 보강 필요.
+
+4. Outbox 패턴
+- DB 상태 변경 + Kafka 발행의 원자성 강화를 위해 Outbox 도입 고려.
+
+5. Compensation 구현 완성
+- handleDepositChargeFailure 경로를 실제 실패 이벤트와 연결하고,
+  settlement 상태 롤백/재시도 정책 명시.
+
+6. DLT 운영 자동화
+- DLT 모니터링 대시보드 + 재처리 배치 + poison message 분리 정책 필요.
+
+7. observability
+- sagaId/orderCode를 모든 로그/메시지 헤더에 통일 삽입하여 추적성 강화.
+
+================================================================
+9) "얼마나 잘 아는지" 확인하는 심화 질문(평가용)
+================================================================
+
+Q1. 왜 choreography가 아니라 orchestration을 택했나요?
+- 좋은 답변 포인트: 상태 가시성, 실패 통제, 운영 난이도, 단계 추적성
+
+Q2. startSaga에서 같은 orderCode의 중복 실행을 어떻게 막나요?
+- 좋은 답변 포인트: referenceCode+sagaType+IN_PROCESS 조회/재사용, unique 제약
+
+Q3. command 발행은 key가 없고 success 이벤트는 key가 orderCode인데, 문제 없나요?
+- 좋은 답변 포인트: 현재 파티션 1개면 체감 적음, 확장 시 ordering/분산 영향 설명 가능해야 함
+
+Q4. 성공 이벤트가 중복으로 오면 어떻게 되나요?
+- 좋은 답변 포인트: terminal 상태 체크로 재처리 방어, 그래도 consumer idempotency 필요
+
+Q5. DB 업데이트와 Kafka 발행의 원자성은 보장되나요?
+- 좋은 답변 포인트: 단일 트랜잭션 아님, Outbox/CDC 필요성 설명
+
+Q6. 실패 보상은 어디까지 구현됐나요?
+- 좋은 답변 포인트: 상태 enum/메서드는 존재, settlement-specific compensation은 TODO
+
+Q7. DLT 메시지는 누가 어떻게 복구하나요?
+- 좋은 답변 포인트: 운영 runbook, 재처리 조건, poison message 정책
+
+Q8. DLT에 안 쌓이고 그냥 지나가는 실패 케이스가 있나요?
+- 좋은 답변 포인트: 핸들러 내부 try-catch로 swallow하면 컨테이너 실패로 보지 않아 DLT 미적재 가능
+
+Q9. 메시지 스키마 변경(필드 추가/삭제) 시 호환성은?
+- 좋은 답변 포인트: schema versioning, backward compatibility, consumer tolerant read
+
+Q10. 이 구조를 테스트로 어떻게 증명했나요?
+- 좋은 답변 포인트: step 단위 성능 테스트, saga 상태 전이 테스트, kafka contract 테스트
+
+9-1) 심화 질문 모범 답변 (면접에서 바로 말하는 버전)
+
+A1. 왜 choreography가 아니라 orchestration을 택했나요?
+"이 플로우는 정산 생성, 예치금 충전, 완료 이벤트 발행까지 여러 경계를 넘기 때문에
+중앙에서 상태를 추적해야 운영이 됩니다. orchestration을 쓰면 SagaStep/SagaStatus로
+현재 단계와 실패 지점을 한눈에 확인할 수 있어 장애 대응이 빨라집니다."
+
+A2. startSaga에서 같은 orderCode의 중복 실행을 어떻게 막나요?
+"referenceCode(orderCode) + sagaType + IN_PROCESS 조건으로 기존 Saga를 먼저 조회하고,
+있으면 재사용합니다. 추가로 DB unique 제약을 같이 두면 동시성 상황에서도 중복 생성 위험을
+낮출 수 있습니다."
+
+A3. command는 key가 없고 success는 key=orderCode인데 문제 없나요?
+"현재 파티션 수가 작으면 당장 큰 문제는 덜하지만, 확장 시 ordering과 파티션 분산에
+불일치가 생길 수 있습니다. 실무에서는 command/success/complete 모두 orderCode key로
+통일하는 게 추적성과 순서 보장 측면에서 안전합니다."
+
+A4. 성공 이벤트가 중복으로 오면 어떻게 되나요?
+"Saga가 이미 terminal 상태면 추가 처리를 차단하도록 방어해야 합니다.
+그리고 이것만으로는 부족해서 consumer idempotency 키(orderCode+eventType+version)로
+중복 소비를 별도로 막는 게 맞습니다."
+
+A5. DB 업데이트와 Kafka 발행 원자성은 보장되나요?
+"현재 구조는 완전한 단일 원자 트랜잭션은 아닙니다.
+그래서 정합성이 중요한 구간은 Outbox + CDC 패턴으로 DB 커밋 이후 이벤트 발행을
+일관되게 만드는 방식으로 고도화해야 합니다."
+
+A6. 실패 보상은 어디까지 구현됐나요?
+"상태 enum과 실패 전이 메서드는 준비돼 있지만, settlement 전용 보상 트랜잭션은
+아직 TODO입니다. 지금은 실패 표기 중심이고, 다음 단계는 실패 이벤트 표준화와
+재시도/보상 정책을 명시적으로 붙이는 것입니다."
+
+A7. DLT 메시지는 누가 어떻게 복구하나요?
+"현재는 DLT 적재까지 자동이고 복구는 운영자 수동 runbook 기반입니다.
+원인 분류 후 재발행/재처리를 수행하고, 목표는 DLT 전용 컨슈머와 자동 재처리 정책을
+도입해 운영 부담을 낮추는 것입니다."
+
+A8. DLT에 안 쌓이고 그냥 지나가는 실패 케이스가 있나요?
+"있습니다. 리스너 내부에서 try-catch로 예외를 잡고 swallow하면 컨테이너는 실패로
+인식하지 않아서 DefaultErrorHandler가 동작하지 않습니다.
+즉 이런 케이스는 재시도/DLT 경로를 타지 않을 수 있습니다."
+
+A9. 메시지 스키마 변경 시 호환성은 어떻게 보나요?
+"기본 원칙은 backward compatible입니다. 필드 추가는 optional로 하고,
+삭제/타입 변경은 버저닝을 통해 단계적으로 전환합니다.
+consumer는 tolerant read 전략으로 모르는 필드는 무시하도록 설계합니다."
+
+A10. 테스트로 어떻게 증명했나요?
+"step 단위 성능 테스트로 처리량/지연을 확인하고,
+Saga 상태 전이 테스트로 INIT->...->COMPLETE 흐름을 검증합니다.
+또 Kafka contract 테스트로 이벤트 스키마와 key 전략 일관성을 확인합니다."
+
+================================================================
+10) 면접 마무리 멘트
+================================================================
+
+"저는 이 구조를 단순 이벤트 연결이 아니라 상태 기계로 보고 설명합니다.
+성공/실패/재시도/DLT까지 운영 플로우를 함께 설계해야 실제 서비스가 안정적입니다.
+다음 고도화는 실패 이벤트 표준화, outbox, key 전략 통일, DLT 자동 재처리입니다."
