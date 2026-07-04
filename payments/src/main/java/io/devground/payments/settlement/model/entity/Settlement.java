@@ -93,6 +93,10 @@ public class Settlement extends BaseEntity {
 		return (long) (this.totalAmount * this.settlementRate);
 	}
 
+	public void setDepositHistoryCode(String depositHistoryCode) {
+		this.depositHistoryCode = depositHistoryCode;
+	}
+
 	public void applySettlementPolicy() {
 		this.settlementBalance = calcSettlementBalance();
 		this.settlementAmount = calcSettlementAmount();

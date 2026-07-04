@@ -15,6 +15,8 @@ import io.devground.payments.common.saga.entity.Saga;
 import io.devground.payments.common.saga.service.SagaService;
 import io.devground.payments.common.saga.vo.SagaStep;
 import io.devground.payments.common.saga.vo.SagaType;
+import io.devground.payments.settlement.model.entity.Settlement;
+import io.devground.payments.settlement.repository.SettlementRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -36,6 +38,7 @@ public class SettlementSagaOrchestrator {
 
 	private final KafkaTemplate<String, Object> kafkaTemplate;
 	private final SagaService sagaService;
+	private final SettlementRepository settlementRepository;
 
 	@Value("${deposits.command.topic.name}")
 	private String depositsCommandTopicName;
@@ -67,6 +70,9 @@ public class SettlementSagaOrchestrator {
 				sagaId, command.orderCode(), e);
 
 			sagaService.updateToFail(sagaId, "정산 입금 커맨드 발행 실패: " + e.getMessage());
+
+			// 보상: Settlement 상태 FAILED 로 변경
+			failSettlement(command.orderCode());
 		}
 	}
 
@@ -107,6 +113,9 @@ public class SettlementSagaOrchestrator {
 				sagaId, event.orderCode(), e);
 
 			sagaService.updateToFail(sagaId, "정산 완료 이벤트 발행 실패: " + e.getMessage());
+
+			// 보상: Settlement 상태 FAILED 로 변경
+			failSettlement(event.orderCode());
 		}
 	}
 
@@ -129,10 +138,23 @@ public class SettlementSagaOrchestrator {
 
 			sagaService.updateToFail(sagaId, "정산 입금 실패: " + errorMessage);
 
-			// TODO: 보상 트랜잭션 2차 때 구현합니다. : Settlement 상태 되돌리기 등
+			// 보상: Settlement 상태 FAILED로 변경
+			failSettlement(orderCode);
 
 		} catch (Exception e) {
 			log.error("정산 입금 실패 처리 중 오류 - OrderCode: {}, Exception: ", orderCode, e);
 		}
+	}
+
+	/**
+	 * Settlement 상태를 FAILED 로 변경한다.
+	 * 정산 입금이 실패한 경우 호출하여 데이터 정합성을 유지한다.
+	 */
+	private void failSettlement(String orderCode) {
+		settlementRepository.findByOrderCode(orderCode).ifPresent(settlement -> {
+			settlement.fail();
+			settlementRepository.save(settlement);
+			log.warn("정산 실패로 Settlement 상태 변경: orderCode={}, status=SETTLEMENT_FAILED", orderCode);
+		});
 	}
 }

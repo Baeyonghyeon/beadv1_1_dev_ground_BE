@@ -5,6 +5,7 @@ import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.stereotype.Component;
 
+import io.devground.core.event.deposit.SettlementDepositChargeFailed;
 import io.devground.core.event.deposit.SettlementDepositChargedSuccess;
 import io.devground.payments.settlement.saga.SettlementSagaOrchestrator;
 import lombok.RequiredArgsConstructor;
@@ -36,6 +37,22 @@ public class SettlementEventHandler {
 
 		} catch (Exception e) {
 			log.error("정산 예치금 충전 성공 이벤트 처리 실패: orderCode={}", event.orderCode(), e);
+		}
+	}
+
+	/**
+	 * 정산 예치금 충전 실패 이벤트 수신
+	 */
+	@KafkaHandler
+	public void handleEvent(@Payload SettlementDepositChargeFailed event) {
+		log.error("정산 예치금 충전 실패 이벤트 수신: userCode={}, amount={}, orderCode={}, msg={}",
+			event.userCode(), event.amount(), event.orderCode(), event.msg());
+
+		try {
+			sagaOrchestrator.handleDepositChargeFailure(event.orderCode(), event.msg());
+
+		} catch (Exception e) {
+			log.error("정산 예치금 충전 실패 이벤트 처리 실패: orderCode={}", event.orderCode(), e);
 		}
 	}
 

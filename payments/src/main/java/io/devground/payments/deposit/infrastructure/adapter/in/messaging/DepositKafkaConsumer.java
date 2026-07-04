@@ -23,6 +23,7 @@ import io.devground.core.event.deposit.DepositRefundFailed;
 import io.devground.core.event.deposit.DepositRefundedSuccess;
 import io.devground.core.event.deposit.DepositWithdrawFailed;
 import io.devground.core.event.deposit.DepositWithdrawnSuccess;
+import io.devground.core.event.deposit.SettlementDepositChargeFailed;
 import io.devground.core.event.deposit.SettlementDepositChargedSuccess;
 
 import io.devground.payments.deposit.application.service.DepositEventApplication;
@@ -254,15 +255,14 @@ public class DepositKafkaConsumer {
 		} catch (Exception e) {
 			log.error("정산 예치금을 충전하는데 오류가 발생했습니다!", e);
 
-			// TODO: SettlementDepositChargeFailed 이벤트 생성 필요
-			DepositChargeFailed depositChargeFailed = new DepositChargeFailed(
+			SettlementDepositChargeFailed failedEvent = new SettlementDepositChargeFailed(
 				command.userCode(),
-				"",
 				command.amount(),
+				command.orderCode(),
 				"정산 예치금 충전에 실패했어요"
 			);
 
-			kafkaTemplate.send(depositsEventTopicName, depositChargeFailed);
+			kafkaTemplate.send(depositsEventTopicName, command.orderCode(), failedEvent);
 		}
 	}
 
