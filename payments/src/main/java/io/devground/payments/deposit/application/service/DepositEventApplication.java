@@ -37,7 +37,7 @@ public class DepositEventApplication implements DepositEventUseCase {
 	public DepositHistory charge(String userCode, DepositHistoryType type, Long amount) {
 		log.info("Processing charge - userCode: {}, type: {}, amount: {}", userCode, type, amount);
 
-		Deposit deposit = depositPersistencePort.getDepositByUserCode(userCode)
+		Deposit deposit = depositPersistencePort.getDepositByUserCodeForUpdate(userCode)
 			.orElseThrow(() -> new ServiceException(ServiceErrorCode.DEPOSIT_NOT_FOUND));
 
 		// 충전 처리
@@ -63,7 +63,7 @@ public class DepositEventApplication implements DepositEventUseCase {
 	public DepositHistory withdraw(String userCode, DepositHistoryType type, Long amount) {
 		log.info("Processing withdraw - userCode: {}, type: {}, amount: {}", userCode, type, amount);
 
-		Deposit deposit = depositPersistencePort.getDepositByUserCode(userCode)
+		Deposit deposit = depositPersistencePort.getDepositByUserCodeForUpdate(userCode)
 			.orElseThrow(() -> new ServiceException(ServiceErrorCode.DEPOSIT_NOT_FOUND));
 
 		// 출금 처리
@@ -89,7 +89,7 @@ public class DepositEventApplication implements DepositEventUseCase {
 	public DepositHistory refund(String userCode, DepositHistoryType type, Long amount) {
 		log.info("Processing refund - userCode: {}, type: {}, amount: {}", userCode, type, amount);
 
-		Deposit deposit = depositPersistencePort.getDepositByUserCode(userCode)
+		Deposit deposit = depositPersistencePort.getDepositByUserCodeForUpdate(userCode)
 			.orElseThrow(() -> new ServiceException(ServiceErrorCode.DEPOSIT_NOT_FOUND));
 
 		// 환불 처리 (충전과 동일)
@@ -113,7 +113,7 @@ public class DepositEventApplication implements DepositEventUseCase {
 	@Override
 	@Transactional
 	public void deleteDeposit(String userCode) {
-		Deposit deposit = depositPersistencePort.getDepositByUserCode(userCode)
+		Deposit deposit = depositPersistencePort.getDepositByUserCodeForUpdate(userCode)
 			.orElseThrow(() -> new ServiceException(ServiceErrorCode.DEPOSIT_NOT_FOUND));
 
 		depositCommandPort.removeDeposit(deposit.getCode());

@@ -27,4 +27,10 @@ public class DepositPersistenceAdapter implements DepositPersistencePort {
 			.map(DepositMapper::toDomain);
 	}
 
+	@Override
+	public Optional<Deposit> getDepositByUserCodeForUpdate(String userCode) {
+		return depositJpaRepository.findByUserCodeForUpdate(userCode)
+			.map(DepositMapper::toDomain);
+	}
+
 }
