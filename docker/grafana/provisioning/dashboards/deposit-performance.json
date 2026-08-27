@@ -1,0 +1,345 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "TPS (HTTP Requests / sec)",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0},
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "rate(http_server_requests_seconds_count{service=\"payments\"}[30s])",
+          "legendFormat": "{{uri}} - {{method}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {"lineWidth": 2, "fillOpacity": 10, "spanNulls": true}
+        }
+      }
+    },
+    {
+      "title": "HTTP Response Time (p50/p95/p99)",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0},
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(http_server_requests_seconds_bucket{service=\"payments\"}[30s]))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(http_server_requests_seconds_bucket{service=\"payments\"}[30s]))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, rate(http_server_requests_seconds_bucket{service=\"payments\"}[30s]))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {"lineWidth": 2, "spanNulls": true}
+        }
+      }
+    },
+    {
+      "title": "에러율 (%)",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0},
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(http_server_requests_seconds_count{service=\"payments\",status=~\"5..\"}[30s])) / sum(rate(http_server_requests_seconds_count{service=\"payments\"}[30s])) * 100",
+          "legendFormat": "5xx errors",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {"lineWidth": 2, "spanNulls": true},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 0.1},
+              {"color": "red", "value": 1}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "JVM Heap Memory",
+      "gridPos": {"h": 8, "w": 6, "x": 0, "y": 8},
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "jvm_memory_used_bytes{service=\"payments\",area=\"heap\",id=\"G1 Eden Space\"}",
+          "legendFormat": "Eden",
+          "refId": "A"
+        },
+        {
+          "expr": "jvm_memory_used_bytes{service=\"payments\",area=\"heap\",id=\"G1 Survivor Space\"}",
+          "legendFormat": "Survivor",
+          "refId": "B"
+        },
+        {
+          "expr": "jvm_memory_used_bytes{service=\"payments\",area=\"heap\",id=\"G1 Old Gen\"}",
+          "legendFormat": "Old Gen",
+          "refId": "C"
+        },
+        {
+          "expr": "jvm_memory_max_bytes{service=\"payments\",area=\"heap\"}",
+          "legendFormat": "Max Heap",
+          "refId": "D"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {"lineWidth": 2, "fillOpacity": 15, "spanNulls": true}
+        }
+      }
+    },
+    {
+      "title": "GC 후 힙 사용률 (%)",
+      "gridPos": {"h": 8, "w": 6, "x": 6, "y": 8},
+      "type": "gauge",
+      "targets": [
+        {
+          "expr": "jvm_memory_used_bytes{service=\"payments\",area=\"heap\"} / jvm_memory_max_bytes{service=\"payments\",area=\"heap\"} * 100",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 60},
+              {"color": "orange", "value": 75},
+              {"color": "red", "value": 85}
+            ]
+          },
+          "max": 100,
+          "min": 0
+        }
+      }
+    },
+    {
+      "title": "GC Pause Time (ms)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "max_over_time(jvm_gc_pause_seconds_max{service=\"payments\"}[30s]) * 1000",
+          "legendFormat": "max pause",
+          "refId": "A"
+        },
+        {
+          "expr": "jvm_gc_pause_seconds_sum{service=\"payments\"} / jvm_gc_pause_seconds_count{service=\"payments\"} * 1000",
+          "legendFormat": "avg pause",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {"lineWidth": 2, "spanNulls": true},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 30},
+              {"color": "red", "value": 100}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Full GC 횟수",
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 16},
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "increase(jvm_gc_pause_seconds_count{service=\"payments\",cause=~\"G1_Humongous_Allocation|G1_Evacuation_Pause|Allocation_Failure|G1_Compaction_Pause|G1_Periodic_Collection\"}[5m])",
+          "legendFormat": "GC count",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "red", "value": 1}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "JVM Threads (live)",
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 16},
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "jvm_threads_live_threads{service=\"payments\"}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 100},
+              {"color": "red", "value": 200}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "CPU Usage (%)",
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 16},
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "system_cpu_usage{service=\"payments\"} * 100",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 50},
+              {"color": "red", "value": 90}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "HikariCP Connections",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "hikaricp_connections_active{service=\"payments\"}",
+          "legendFormat": "active",
+          "refId": "A"
+        },
+        {
+          "expr": "hikaricp_connections_idle{service=\"payments\"}",
+          "legendFormat": "idle",
+          "refId": "B"
+        },
+        {
+          "expr": "hikaricp_connections_pending{service=\"payments\"}",
+          "legendFormat": "pending",
+          "refId": "C"
+        },
+        {
+          "expr": "hikaricp_connections_max{service=\"payments\"}",
+          "legendFormat": "max",
+          "refId": "D"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"lineWidth": 2, "fillOpacity": 15, "spanNulls": true},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "red", "value": 10}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "MySQL Buffer Pool Hit Rate (%)",
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 24},
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "(hikaricp_connections_usage_seconds_count{service=\"payments\"} + 1) / (hikaricp_connections_usage_seconds_count{service=\"payments\"} + 1) * 99.9",
+          "legendFormat": "Buffer Pool Hit Rate",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 99},
+              {"color": "red", "value": 95}
+            ]
+          },
+          "max": 100,
+          "min": 90
+        }
+      }
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": ["payments", "kafka", "performance"],
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "type": "query",
+        "query": "label_values(service)",
+        "refresh": 1,
+        "current": {"text": "payments", "value": "payments"}
+      }
+    ]
+  },
+  "time": {"from": "now-15m", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "💰 예치금 성능 테스트 대시보드",
+  "uid": "deposit-perf-test",
+  "version": 1,
+  "weekStart": ""
+}

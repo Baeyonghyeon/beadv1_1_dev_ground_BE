@@ -133,6 +133,13 @@ custom:
       topic-partitions: 1
       topic-replications: 1
 
+order:
+  payment:
+    strategy: feign  # feign | kafka (비교 벤치마크용)
+
+external:
+  payment-url: http://localhost:8085
+
 logging:
   level:
     org.hibernate.SQL: INFO

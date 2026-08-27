@@ -1,0 +1,170 @@
+# ============================================================================
+# bench 프로파일 — Kafka 도입 근거 A/B 부하 테스트 전용 (commerce)
+#
+# 설계 문서: claude-kafka-test-설계.md
+# 사전 작업: claude-kafka-test-사전작업.md
+#
+# 원칙
+#  1. t3.large(2 vCPU / 8GB) 재현을 위해 Tomcat·HikariCP 를 의도적으로 좁게 잡는다
+#  2. 결제 시나리오와 무관한 것(Eureka / 배치 / 스케줄러 / 검색)은 전부 끈다
+#  3. 호스트 실행과 컨테이너 실행을 모두 지원하도록 접속 정보는 환경변수로 오버라이드 가능
+#     - 컨테이너: 기본값 그대로 (compose 네트워크의 서비스명)
+#     - 호스트  : BENCH_MYSQL_HOST=localhost BENCH_KAFKA=localhost:9092 ...
+# ============================================================================
+
+spring:
+  application:
+    name: commerce
+
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://${BENCH_MYSQL_HOST:mysql}:${BENCH_MYSQL_PORT:3306}/dbay_db?serverTimezone=Asia/Seoul&characterEncoding=UTF-8&rewriteBatchedStatements=true
+    username: mysqlId
+    password: mysqlPwd
+    hikari:
+      # ▼ 임계점을 만들기 위한 의도적 제약 (설계 문서 §3.4)
+      maximum-pool-size: 10
+      minimum-idle: 10
+      connection-timeout: 3000      # 3초 안에 커넥션 못 받으면 예외 → 거절로 계측
+      pool-name: commerce-hikari
+      register-mbeans: true
+
+  jpa:
+    hibernate:
+      naming:
+        physical-strategy: org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl
+      ddl-auto: update
+    open-in-view: false             # 커넥션 점유 시간 왜곡 방지
+    properties:
+      hibernate:
+        default_batch_fetch_size: 500
+        format_sql: false
+        jdbc:
+          time_zone: Asia/Seoul
+
+  kafka:
+    bootstrap-servers: ${BENCH_KAFKA:kafka:9090}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+      properties:
+        delivery.timeout.ms: 120000
+        linger.ms: 0
+        request.timeout.ms: 30000
+        enable.idempotence: true
+        allow.auto.create.topics: false
+    consumer:
+      group-id: ${BENCH_COMMERCE_GROUP:commerce-bench}
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: io.devground.dbay.*, io.devground.core.*
+        allow.auto.create.topics: false
+
+  # 결제 시나리오와 무관 — 검색/AI 는 완전히 배제한다.
+  # ElasticsearchVectorStore 는 initialize-schema 값과 무관하게 기동 시 ES 에 연결하므로
+  # 자동 구성을 제외하고 BenchAiConfig 의 no-op VectorStore 로 대체한다.
+  autoconfigure:
+    exclude:
+      - org.springframework.ai.vectorstore.elasticsearch.autoconfigure.ElasticsearchVectorStoreAutoConfiguration
+      - org.springframework.boot.autoconfigure.elasticsearch.ElasticsearchRestClientAutoConfiguration
+  ai:
+    openai:
+      api-key: bench-not-used     # ChatClient 는 기동 시 연결하지 않음 (더미 키로 충분)
+
+  batch:
+    job:
+      enabled: false
+
+  cloud:
+    discovery:
+      enabled: false
+
+# Eureka 미사용 (서비스 디스커버리는 이번 실험 변수가 아님)
+eureka:
+  client:
+    enabled: false
+    register-with-eureka: false
+    fetch-registry: false
+
+server:
+  port: 8081
+  tomcat:
+    threads:
+      max: 50                       # ▼ 워커 스레드 제약 (설계 문서 §3.4)
+      min-spare: 10
+    accept-count: 100               # 큐 초과 시 커넥션 거절
+    max-connections: 200
+    connection-timeout: 3s
+    mbeanregistry:
+      enabled: true                 # tomcat_* 메트릭 노출에 필요
+
+# ============================================================================
+# 관측 (P0-6) — 이 블록이 이번 작업의 핵심
+# ============================================================================
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: commerce
+      service: commerce             # Grafana 대시보드의 service 라벨과 일치
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true  # ← 없으면 histogram_quantile 패널이 빈 그래프가 된다
+      slo:
+        http.server.requests: 50ms,100ms,300ms,1s,3s
+      minimum-expected-value:
+        http.server.requests: 1ms
+      maximum-expected-value:
+        http.server.requests: 30s
+
+# ============================================================================
+# 실험 변수 — Arm 별로 이 두 개만 바꾼다 (실행 시 --order.xxx 로 오버라이드)
+#   Arm A  : payment=feign  postprocess=sync
+#   Arm A′ : payment=feign  postprocess=sync   + tx-boundary=outside
+#   Arm B  : payment=feign  postprocess=kafka  (현재 운영 기본값)
+#   Arm C  : payment=kafka  postprocess=kafka
+# ============================================================================
+order:
+  payment:
+    strategy: ${BENCH_PAYMENT_STRATEGY:feign}
+  postprocess:
+    strategy: ${BENCH_POSTPROCESS_STRATEGY:kafka}   # sync | kafka (OrderPostProcessPort 전략)
+  scheduler:
+    auto-delivery-cron: "-"         # 테스트 중 주문 상태 자동 변경 금지 (완결 시간 오염 방지)
+
+# 스텁 상품 설정 (BenchOrderProductAdapter)
+bench:
+  product:
+    price: 5000          # 설계 §3.2 변수 통제: 단가 고정
+    seller-pool: 100     # 판매자 분산 (한 행 경합 방지)
+
+external:
+  payment-url: ${BENCH_PAYMENT_URL:http://payments:8085}
+
+custom:
+  kafka:
+    config:
+      topic-partitions: ${BENCH_PARTITIONS:3}   # consumer concurrency 도 이 값을 따라감
+      topic-replications: 1
+
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+
+logging:
+  level:
+    root: WARN
+    io.devground: INFO
+    org.hibernate.SQL: WARN
+    org.apache.kafka: WARN

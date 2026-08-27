@@ -12,7 +12,6 @@ import io.devground.core.commands.deposit.CreateDeposit;
 import io.devground.core.commands.deposit.DeleteDeposit;
 import io.devground.core.commands.deposit.RefundDeposit;
 import io.devground.core.commands.deposit.SettlementChargeDeposit;
-import io.devground.core.commands.deposit.WithdrawDeposit;
 import io.devground.core.event.deposit.DepositChargeFailed;
 import io.devground.core.event.deposit.DepositChargedSuccess;
 import io.devground.core.event.deposit.DepositCreateFailed;
@@ -21,8 +20,6 @@ import io.devground.core.event.deposit.DepositDeleteFailed;
 import io.devground.core.event.deposit.DepositDeletedSuccess;
 import io.devground.core.event.deposit.DepositRefundFailed;
 import io.devground.core.event.deposit.DepositRefundedSuccess;
-import io.devground.core.event.deposit.DepositWithdrawFailed;
-import io.devground.core.event.deposit.DepositWithdrawnSuccess;
 import io.devground.core.event.deposit.SettlementDepositChargeFailed;
 import io.devground.core.event.deposit.SettlementDepositChargedSuccess;
 
@@ -127,44 +124,6 @@ public class DepositKafkaConsumer {
 			);
 
 			kafkaTemplate.send(depositsPaymentEventTopicName, depositChargeFailed);
-		}
-	}
-
-	@KafkaHandler
-	public void handleWithdrawCommand(@Payload WithdrawDeposit command) {
-		log.info("Received WithdrawDeposit command: {}", command);
-
-		try {
-			DepositHistory depositHistory = depositEventApplication.withdraw(
-				command.userCode(),
-				DepositHistoryType.valueOf(command.type().name()),
-				command.amount()
-			);
-
-			DepositWithdrawnSuccess depositWithdrawnSuccess = new DepositWithdrawnSuccess(
-				depositHistory.getUserCode(),
-				depositHistory.getCode(),
-				depositHistory.getAmount(),
-				depositHistory.getBalanceAfter(),
-				command.orderCode(),
-				command.productCodes()
-			);
-
-			kafkaTemplate.send(depositsPurchaseEventTopicName, command.orderCode(), depositWithdrawnSuccess);
-
-			log.info("예치금 인출 완료: userCode={}, amount={}", command.userCode(), command.amount());
-
-		} catch (Exception e) {
-			log.error("예치금을 인출하는데 오류가 발생했습니다!", e);
-
-			DepositWithdrawFailed depositWithdrawFailed = new DepositWithdrawFailed(
-				command.userCode(),
-				command.amount(),
-				"예치금 인출에 실패했어요",
-				command.orderCode()
-			);
-
-			kafkaTemplate.send(depositsPurchaseEventTopicName, command.orderCode(), depositWithdrawFailed);
 		}
 	}
 

@@ -1,0 +1,47 @@
+spring:
+  application:
+    name: payments
+
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/dbay_db?serverTimezone=Asia/Seoul&characterEncoding=UTF-8
+    username: mysqlId
+    password: mysqlPwd
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+      naming:
+        physical-strategy: org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl
+    properties:
+      hibernate:
+        default_batch_fetch_size: 500
+        format_sql: true
+
+  # 불필요한 자동 설정 전부 끄기
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
+      - org.springframework.boot.autoconfigure.batch.BatchAutoConfiguration
+      - org.springframework.cloud.openfeign.FeignAutoConfiguration
+
+  # Kafka 꺼짐 보장
+  kafka:
+    enabled: false
+    listener:
+      auto-startup: false
+
+  # Batch 꺼짐 보장
+  batch:
+    job:
+      enabled: false
+
+# Eureka 꺼짐 보장
+eureka:
+  client:
+    enabled: false
+
+logging:
+  level:
+    root: WARN
+    io.devground.payments.support: INFO

@@ -57,3 +57,12 @@ spy.log
 *.properties
 
 .DS_Store
+
+# k6 확장 바이너리 (55MB) — 필요 시 아래에서 내려받을 것
+# https://github.com/mostafa/xk6-kafka/releases
+k6-scripts/xk6-kafka_*
+
+# 부하 테스트 실행 산출물 (매 회차 재생성) — evidence/ 는 예외로 보존
+k6-scripts/results/
+bench-scripts/results/*
+!bench-scripts/results/evidence/

@@ -11,7 +11,7 @@ import io.devground.payments.settlement.model.dto.UnsettledOrderItemResponse;
 @FeignClient(
 	name = "SettlementToOrder",
 	url = "${external.openfeign-url}",
-	path = "/api/orders"
+	path = "/api/commerce/order"
 )
 public interface OrderFeignClient {
 

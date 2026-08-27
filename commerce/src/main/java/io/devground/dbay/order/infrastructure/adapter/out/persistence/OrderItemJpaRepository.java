@@ -33,7 +33,7 @@ public interface OrderItemJpaRepository extends JpaRepository<OrderItemEntity, L
         FROM OrderItemEntity oi
         JOIN oi.orderEntity o
         WHERE o.orderStatus = io.devground.dbay.order.domain.vo.OrderStatus.DELIVERED
-        AND o.updatedAt BETWEEN :start AND :end
+        AND o.updatedAt <= :cutoff
         """)
-    Page<UnsettledOrderItemResponse> findOrderItemsDelivered(LocalDateTime start, LocalDateTime end, Pageable pageable);
+    Page<UnsettledOrderItemResponse> findOrderItemsDelivered(LocalDateTime cutoff, Pageable pageable);
 }

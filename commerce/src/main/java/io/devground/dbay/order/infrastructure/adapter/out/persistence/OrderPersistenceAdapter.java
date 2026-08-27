@@ -190,10 +190,10 @@ public class OrderPersistenceAdapter implements OrderPersistencePort {
     }
 
     @Override
-    public PageDto<UnsettledOrderItemResponse> getUnsettledOrderItems(PageQuery pageQuery, LocalDateTime start, LocalDateTime end) {
+    public PageDto<UnsettledOrderItemResponse> getUnsettledOrderItems(PageQuery pageQuery, LocalDateTime cutoff) {
         Pageable pageable = PageMapper.toPageable(pageQuery);
 
-        Page<UnsettledOrderItemResponse> unsettledOrderPage = orderItemJpaRepository.findOrderItemsDelivered(start, end, pageable);
+        Page<UnsettledOrderItemResponse> unsettledOrderPage = orderItemJpaRepository.findOrderItemsDelivered(cutoff, pageable);
 
         return new PageDto<>(
                 unsettledOrderPage.getNumber(),

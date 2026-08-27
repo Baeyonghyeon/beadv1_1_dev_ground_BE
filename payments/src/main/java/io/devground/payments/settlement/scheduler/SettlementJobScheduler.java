@@ -25,7 +25,8 @@ public class SettlementJobScheduler {
 	 * - 매달 2일 새벽 2시 실행 (cron: 0 0 2 2 * *)
 	 * - 2주 지난 확정 주문에 대한 정산 처리
 	 */
-	@Scheduled(cron = "0 0 2 2 * *")
+	// bench 프로파일에서 "-" 로 비활성화 (부하 테스트 중 정산 배치 개입 방지)
+	@Scheduled(cron = "${custom.settlement.cron:0 0 2 2 * *}")
 	public void runSettlementBatch() {
 		try {
 			log.info("=== 정산 배치 작업 시작 ===");

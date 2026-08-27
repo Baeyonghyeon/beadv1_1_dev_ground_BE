@@ -25,8 +25,8 @@ public class UnsettledOrderItemReader implements ItemReader<UnsettledOrderItemRe
 
 	private List<UnsettledOrderItemResponse> unsettledItems;
 	private int currentIndex = 0;
-	private int currentPage = 0;
-	private static final int PAGE_SIZE = 100;
+	private int currentPage = 1;
+	private static final int PAGE_SIZE = 500;
 
 	/**
 	 * 배치 작업에서 한 번에 하나의 아이템을 읽어옴
@@ -83,7 +83,7 @@ public class UnsettledOrderItemReader implements ItemReader<UnsettledOrderItemRe
 
 			// PageDto의 currentPageNumber를 사용하여 다음 페이지 설정
 			// PageDto.currentPageNumber는 1부터 시작하므로, 다음 페이지는 currentPageNumber
-			currentPage = pageDto.currentPageNumber();
+			currentPage = pageDto.currentPageNumber() + 1;  // convert 1-based page to next page
 
 		} catch (Exception e) {
 			log.error("Order 도메인에서 정산 대상 OrderItem 조회 실패: page={}", currentPage, e);
