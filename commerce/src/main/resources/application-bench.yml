@@ -135,7 +135,13 @@ management:
 # ============================================================================
 order:
   payment:
-    strategy: ${BENCH_PAYMENT_STRATEGY:feign}
+    strategy: ${BENCH_PAYMENT_STRATEGY:feign}   # feign(동기) | kafka(비동기 결제)
+    timeout-seconds: 300
+    reconcile-batch-size: 100
+    # 측정 중에는 회수 스케줄러를 끈다 — 회수가 주문 상태를 바꾸면 완결 시간 집계가 오염된다.
+    reconcile-cron: "-"
+    # 측정 중에는 끈다 — 접수 경로에 Feign 호출이 늘면 A/B 비교가 오염된다.
+    pre-check-balance: ${BENCH_PRE_CHECK_BALANCE:false}
   postprocess:
     strategy: ${BENCH_POSTPROCESS_STRATEGY:kafka}   # sync | kafka (OrderPostProcessPort 전략)
   scheduler:

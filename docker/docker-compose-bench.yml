@@ -140,6 +140,14 @@ services:
       # ▼ Arm 스위치 — 회차마다 이 두 개만 바꾼다
       BENCH_PAYMENT_STRATEGY: "${BENCH_PAYMENT_STRATEGY:-feign}"
       BENCH_POSTPROCESS_STRATEGY: "${BENCH_POSTPROCESS_STRATEGY:-kafka}"
+      # 비동기 결제의 잔액 사전 확인 (설계 §7). 켜면 접수 경로에 Feign 호출이 하나 늘어
+      # A/B 측정이 오염되므로 기본값은 false 다.
+      BENCH_PRE_CHECK_BALANCE: "${BENCH_PRE_CHECK_BALANCE:-false}"
+      # Tomcat 커넥션 수용 한계. 기본 200 은 t3.large 재현을 위한 의도적 제약이다.
+      # 스파이크 측정에서 이 값이 먼저 걸리면 애플리케이션 차이가 통째로 묻히므로,
+      # 그 영향을 격리하는 회차에서만 올린다.
+      SERVER_TOMCAT_MAX_CONNECTIONS: "${BENCH_MAX_CONNECTIONS:-200}"
+      SERVER_TOMCAT_ACCEPT_COUNT: "${BENCH_ACCEPT_COUNT:-100}"
     ports:
       - "8081:8081"
     depends_on:
