@@ -25,7 +25,19 @@ public class Payment extends BaseEntity {
 	@GeneratedValue(strategy = GenerationType.IDENTITY)
 	private Long id;
 
+	/**
+	 * 주문 코드 — <b>멱등키를 겸한다.</b>
+	 *
+	 * <p>unique 제약이 중복 결제를 DB 레벨에서 막는다. 클라이언트 재시도나 Kafka 의
+	 * at-least-once 재전송으로 같은 주문의 결제 커맨드가 두 번 들어와도 두 번째는
+	 * {@code DataIntegrityViolationException} 으로 튕긴다.
+	 * 실측된 "유령 주문"(클라 타임아웃 후 재시도로 인한 이중 결제 위험) 대응이다.
+	 *
+	 * <p>⚠️ 기존 데이터에 중복 {@code orderCode} 가 있으면 인덱스 생성이 실패한다.
+	 * 배포 전 {@code SELECT orderCode FROM Payment GROUP BY orderCode HAVING COUNT(*) > 1} 로 확인할 것.
+	 */
 	@Setter
+	@Column(unique = true)
 	private String orderCode;
 
 	@Setter

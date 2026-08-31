@@ -91,6 +91,38 @@ public class PaymentController {
 		);
 	}
 
+	/**
+	 * 주문 코드로 결제 기록을 조회한다 — commerce 의 결제 회수 스케줄러 전용.
+	 *
+	 * <p>결제가 없어도 <b>404 가 아니라 200 + {@code data: null}</b> 을 준다.
+	 * "결제가 없다" 는 오류가 아니라 회수 판정에 필요한 정상적인 답이기 때문이다.
+	 * 404 로 주면 Feign 이 예외를 던져 "조회 실패" 와 구분할 수 없게 되고,
+	 * 그 혼동은 <b>이미 돈이 빠진 주문을 취소</b>하는 사고로 이어진다.
+	 */
+	@GetMapping("/order/{orderCode}")
+	public BaseResponse<PaymentLookupResponse> findByOrderCode(@PathVariable String orderCode) {
+		return paymentService.findByOrderCode(orderCode)
+			.map(payment -> BaseResponse.success(
+				200,
+				new PaymentLookupResponse(
+					payment.getOrderCode(),
+					payment.getCode(),
+					payment.getPaymentStatus().name(),
+					payment.getAmount()
+				),
+				"결제 기록을 조회했습니다."
+			))
+			.orElseGet(() -> BaseResponse.success(200, null, "결제 기록이 없습니다."));
+	}
+
+	public record PaymentLookupResponse(
+		String orderCode,
+		String paymentCode,
+		String paymentStatus,
+		Long amount
+	) {
+	}
+
 	@GetMapping("/")
 	public BaseResponse<Page<GetPaymentsResponse>> getPayments(
 		@RequestHeader("X-CODE") String userCode,
