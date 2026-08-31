@@ -18,6 +18,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -72,7 +73,9 @@ public class OrderPersistenceAdapter implements OrderPersistencePort {
                 .totalAmount(order.totalPrice(order.getOrderItems()))
                 .build();
 
-
+        // 도메인이 정한 최초 상태를 그대로 반영한다.
+        // 동기 결제 경로는 PENDING(결제 완료, 후처리 대기), 비동기 경로는 PAYMENT_PENDING(결제 미확정).
+        orderEntity.setOrderStatus(order.getOrderStatus());
 
         orderJpaRepository.save(orderEntity);
 
@@ -109,6 +112,9 @@ public class OrderPersistenceAdapter implements OrderPersistencePort {
                 .addressDetail(userInfo.addressDetail())
                 .totalAmount(order.totalPrice(order.getOrderItems()))
                 .build();
+
+        // createSingleOrder 와 같은 이유 — 도메인이 정한 최초 상태를 반영한다.
+        orderEntity.setOrderStatus(order.getOrderStatus());
 
         orderJpaRepository.save(orderEntity);
 
@@ -163,6 +169,7 @@ public class OrderPersistenceAdapter implements OrderPersistencePort {
     }
 
     @Override
+    @Transactional
     public void cancel(OrderCode orderCode) {
         if (orderCode == null) {
             throw ErrorCode.ORDER_NOT_FOUND.throwServiceException();
@@ -172,6 +179,7 @@ public class OrderPersistenceAdapter implements OrderPersistencePort {
     }
 
     @Override
+    @Transactional
     public void confirm(OrderCode orderCode) {
         if (orderCode == null) {
             throw ErrorCode.ORDER_NOT_FOUND.throwServiceException();
@@ -181,12 +189,77 @@ public class OrderPersistenceAdapter implements OrderPersistencePort {
     }
 
     @Override
+    @Transactional
     public void paid(OrderCode orderCode) {
         if (orderCode == null) {
             throw ErrorCode.ORDER_NOT_FOUND.throwServiceException();
         }
 
         orderJpaRepository.paidByCode(orderCode.value());
+    }
+
+    @Override
+    @Transactional
+    public boolean markPaidIfAwaitingPayment(OrderCode orderCode) {
+        if (orderCode == null) {
+            throw ErrorCode.ORDER_NOT_FOUND.throwServiceException();
+        }
+
+        return orderJpaRepository.paidByCodeIfAwaitingPayment(orderCode.value()) > 0;
+    }
+
+    @Override
+    @Transactional
+    public boolean markPaymentFailedIfAwaitingPayment(OrderCode orderCode) {
+        if (orderCode == null) {
+            throw ErrorCode.ORDER_NOT_FOUND.throwServiceException();
+        }
+
+        return orderJpaRepository.failPaymentByCodeIfAwaitingPayment(orderCode.value()) > 0;
+    }
+
+    @Override
+    @Transactional
+    public boolean cancelIfAwaitingPayment(OrderCode orderCode) {
+        if (orderCode == null) {
+            throw ErrorCode.ORDER_NOT_FOUND.throwServiceException();
+        }
+
+        return orderJpaRepository.cancelByCodeIfAwaitingPayment(orderCode.value()) > 0;
+    }
+
+    @Override
+    public List<String> findTimedOutAwaitingPayment(LocalDateTime cutoff, int limit) {
+        return orderJpaRepository.findTimedOutAwaitingPayment(cutoff, PageRequest.of(0, limit));
+    }
+
+    @Override
+    public List<String> getProductCodes(OrderCode orderCode) {
+        if (orderCode == null) {
+            throw ErrorCode.ORDER_NOT_FOUND.throwServiceException();
+        }
+
+        return orderItemJpaRepository.findProductCodesByOrderCode(orderCode.value());
+    }
+
+    @Override
+    @Transactional
+    public void markAwaitingPayment(OrderCode orderCode) {
+        if (orderCode == null) {
+            throw ErrorCode.ORDER_NOT_FOUND.throwServiceException();
+        }
+
+        orderJpaRepository.markAwaitingPaymentByCode(orderCode.value());
+    }
+
+    @Override
+    public OrderPaymentStatus getPaymentStatus(OrderCode orderCode) {
+        if (orderCode == null) {
+            throw ErrorCode.ORDER_NOT_FOUND.throwServiceException();
+        }
+
+        return orderJpaRepository.findPaymentStatusByCode(orderCode.value())
+                .orElseThrow(ErrorCode.ORDER_NOT_FOUND::throwServiceException);
     }
 
     @Override
