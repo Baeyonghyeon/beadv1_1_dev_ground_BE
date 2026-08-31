@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
@@ -110,8 +111,13 @@ public class PaymentServiceImpl implements PaymentService {
 			.orElseThrow(() -> new ServiceException(ServiceErrorCode.DEPOSIT_NOT_FOUND));
 
 		// 2. 잔액 검증 (실패 시 예외 → 전체 롤백)
+		//
+		// ⚠️ IllegalStateException 을 쓰면 GlobalExceptionHandler 의 fallback 에 걸려 **500** 이 나간다.
+		//    잔액 부족은 서버 오류가 아니라 사용자 사정이므로 400 이어야 한다.
+		//    호출자(commerce)도 이 구분에 의존한다 — 400 이면 "결제 거절"(주문 취소 안전),
+		//    5xx 면 "결제 서비스 이상"(취소해도 되는지 불확실)로 다르게 처리한다.
 		if (deposit.getBalance() < request.amount()) {
-			throw new IllegalStateException("예치금이 부족하여 결제를 진행할 수 없습니다.");
+			throw new ServiceException(ServiceErrorCode.INSUFFICIENT_BALANCE);
 		}
 
 		// 3. 예치금 차감
@@ -146,6 +152,12 @@ public class PaymentServiceImpl implements PaymentService {
 			userCode, request.orderCode(), request.amount(), balanceAfter);
 
 		return payment;
+	}
+
+	@Override
+	@Transactional(readOnly = true)
+	public Optional<Payment> findByOrderCode(String orderCode) {
+		return paymentRepository.findByOrderCode(orderCode);
 	}
 
 	@Override
