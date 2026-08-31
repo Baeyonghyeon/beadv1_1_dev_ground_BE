@@ -2,6 +2,8 @@ package io.devground.dbay.order.infrastructure.adapter.out.payment;
 
 import io.devground.core.model.web.BaseResponse;
 import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -36,9 +38,24 @@ public interface PaymentFeignClient {
         }
     }
 
+    /**
+     * 주문 코드로 결제 기록을 조회한다 — 회수 스케줄러 전용.
+     * 결제가 없으면 {@code data} 가 {@code null} 인 성공 응답이 온다(404 가 아니다).
+     */
+    @GetMapping("/order/{orderCode}")
+    BaseResponse<PaymentLookupResponse> findByOrderCode(@PathVariable("orderCode") String orderCode);
+
     record PaymentFeignResponse(
             String orderCode,
             String paymentCode
+    ) {
+    }
+
+    record PaymentLookupResponse(
+            String orderCode,
+            String paymentCode,
+            String paymentStatus,
+            Long amount
     ) {
     }
 }
