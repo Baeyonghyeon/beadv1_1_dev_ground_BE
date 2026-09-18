@@ -1,0 +1,19 @@
+# 부하 테스트 이미지 빌드(docker/Dockerfile-bench)용 컨텍스트 축소
+# 주의: build/libs 는 제외하지 않는다 (사전 빌드된 jar 를 복사해야 함)
+.git
+.gradle
+.idea
+**/.idea
+**/out
+**/build/classes
+**/build/tmp
+**/build/resources
+**/build/reports
+**/build/test-results
+**/build/generated
+docker/logs
+k6-scripts/xk6-kafka_*
+k6-scripts/*.csv
+interview
+index-lab-jpa
+*.md

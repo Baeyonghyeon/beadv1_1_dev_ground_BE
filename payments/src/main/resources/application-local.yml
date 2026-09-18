@@ -65,3 +65,13 @@ eureka:
     prefer-ip-address: true
     ip-address: localhost
     non-secure-port: 8085
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus,metrics
+  metrics:
+    export:
+      prometheus:
+        enabled: true

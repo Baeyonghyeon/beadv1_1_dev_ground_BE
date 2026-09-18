@@ -1,0 +1,12 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    # 대시보드 JSON 이 "uid": "prometheus" 를 하드코딩하므로 반드시 고정한다.
+    # 비워두면 Grafana 가 랜덤 UID 를 할당해 전 패널이 빈 화면이 된다.
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true

@@ -1,0 +1,16 @@
+# 부하 테스트용 런타임 이미지 (사전 빌드된 jar 를 복사만 한다)
+#
+# 빌드 전 반드시: ./gradlew :commerce:bootJar :payments:bootJar
+# 빌드:          docker compose -f docker/docker-compose-bench.yml build
+#
+# JDK 가 아니라 JRE 를 쓰는 이유: t3.large(8GB) 재현에서 이미지/메모리 낭비를 줄이기 위함
+FROM eclipse-temurin:21-jre
+
+ENV TZ=Asia/Seoul
+WORKDIR /app
+
+ARG APP_DIR
+COPY ${APP_DIR}/build/libs/*-SNAPSHOT.jar app.jar
+
+# JAVA_OPTS 는 compose 에서 주입 (힙/GC 를 Arm 간 동일하게 통제)
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar app.jar"]

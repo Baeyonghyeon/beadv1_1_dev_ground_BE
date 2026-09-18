@@ -8,8 +8,10 @@ import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
@@ -29,6 +31,7 @@ import io.devground.payments.deposit.application.port.out.DepositPersistencePort
 import io.devground.payments.deposit.application.exception.ServiceException;
 import io.devground.payments.deposit.application.exception.vo.ServiceErrorCode;
 import io.devground.payments.deposit.domain.deposit.Deposit;
+import io.devground.payments.payment.event.PaymentCompletedEvent;
 import io.devground.payments.payment.mapper.PaymentMapper;
 import io.devground.payments.payment.model.dto.request.PaymentRequest;
 import io.devground.payments.payment.model.dto.request.RefundRequest;
@@ -53,7 +56,14 @@ public class PaymentServiceImpl implements PaymentService {
 	// 예치금 직접 접근 (FeignClient 대신 Port 직접 주입)
 	private final DepositPersistencePort depositPersistencePort;
 	private final DepositCommandPort depositCommandPort;
+
+	// 예치금 이력은 락 구간 밖에서 저장한다 (FK 락 자기충돌 방지) — DepositHistoryRecorder 참조
 	private final DepositHistoryRecorder historyRecorder;
+	private final ApplicationEventPublisher eventPublisher;
+
+	/** join(기본, 커넥션 1개) | after-commit(커넥션 2개, 이력 실패가 결제를 막지 않음) */
+	@Value("${payments.history.strategy:join}")
+	private String historyStrategy;
 
 	// Toss 충전 용도로만 Kafka 유지
 	private final KafkaTemplate<String, Object> kafkaTemplate;
@@ -73,6 +83,7 @@ public class PaymentServiceImpl implements PaymentService {
 	                          DepositPersistencePort depositPersistencePort,
 	                          DepositCommandPort depositCommandPort,
 	                          DepositHistoryRecorder historyRecorder,
+	                          ApplicationEventPublisher eventPublisher,
 	                          KafkaTemplate<String, Object> kafkaTemplate) {
 		this.objectMapper = objectMapper;
 		this.paymentRepository = paymentRepository;
@@ -80,13 +91,17 @@ public class PaymentServiceImpl implements PaymentService {
 		this.depositPersistencePort = depositPersistencePort;
 		this.depositCommandPort = depositCommandPort;
 		this.historyRecorder = historyRecorder;
+		this.eventPublisher = eventPublisher;
 		this.kafkaTemplate = kafkaTemplate;
 	}
 
 	/**
 	 * 주문 결제 처리 (핵심 트랜잭션).
 	 * 예치금 차감 + 결제 저장을 하나의 {@code @Transactional} 로 원자 처리한다.
-	 * 예치금 이력 저장은 별도 트랜잭션(REQUIRES_NEW)으로 분리되어 실패해도 영향을 주지 않는다.
+	 *
+	 * <p>예치금 이력 저장은 {@code AFTER_COMMIT} 리스너로 커밋 이후에 실행된다.
+	 * 락 구간 안에서 자식 테이블을 INSERT 하면 FK 검사의 S 락이 이 트랜잭션의 X 락에 막혀
+	 * lock wait timeout 이 발생하기 때문이다. 자세한 내용은 {@link DepositHistoryRecorder} 참조.
 	 */
 	@Override
 	@Transactional
@@ -96,8 +111,13 @@ public class PaymentServiceImpl implements PaymentService {
 			.orElseThrow(() -> new ServiceException(ServiceErrorCode.DEPOSIT_NOT_FOUND));
 
 		// 2. 잔액 검증 (실패 시 예외 → 전체 롤백)
+		//
+		// ⚠️ IllegalStateException 을 쓰면 GlobalExceptionHandler 의 fallback 에 걸려 **500** 이 나간다.
+		//    잔액 부족은 서버 오류가 아니라 사용자 사정이므로 400 이어야 한다.
+		//    호출자(commerce)도 이 구분에 의존한다 — 400 이면 "결제 거절"(주문 취소 안전),
+		//    5xx 면 "결제 서비스 이상"(취소해도 되는지 불확실)로 다르게 처리한다.
 		if (deposit.getBalance() < request.amount()) {
-			throw new IllegalStateException("예치금이 부족하여 결제를 진행할 수 없습니다.");
+			throw new ServiceException(ServiceErrorCode.INSUFFICIENT_BALANCE);
 		}
 
 		// 3. 예치금 차감
@@ -116,13 +136,28 @@ public class PaymentServiceImpl implements PaymentService {
 		payment.setPaymentStatus(PaymentStatus.PAYMENT_COMPLETED);
 		paymentRepository.save(payment);
 
-		// 6. 예치금 이력 저장 (REQUIRES_NEW 트랜잭션으로 분리, 실패해도 핵심 트랜잭션 영향 없음)
-		historyRecorder.recordPaymentHistory(userCode, deposit.getCode(), request.amount(), balanceAfter);
+		// 6. 예치금 이력은 커밋 이후에 저장한다 (AFTER_COMMIT 리스너).
+		//    이 트랜잭션이 DepositEntity 행에 X 락을 쥐고 있는 동안 자식 테이블을 INSERT 하면
+		//    FK 검사의 S 락이 자기 자신에게 막혀 lock wait timeout(50s) 이 발생한다.
+		//    @see DepositHistoryRecorder
+		if ("after-commit".equals(historyStrategy)) {
+			eventPublisher.publishEvent(new PaymentCompletedEvent(
+				userCode, deposit.getCode(), request.amount(), balanceAfter, request.orderCode()));
+		} else {
+			// join(기본): 같은 트랜잭션이라 FK 검사가 자기 X 락에 막히지 않고, 커넥션도 1개만 쓴다
+			historyRecorder.recordPaymentHistoryInTx(userCode, deposit.getCode(), request.amount(), balanceAfter);
+		}
 
 		log.info("결제 완료 (원자 처리): userCode={}, orderCode={}, amount={}, balanceAfter={}",
 			userCode, request.orderCode(), request.amount(), balanceAfter);
 
 		return payment;
+	}
+
+	@Override
+	@Transactional(readOnly = true)
+	public Optional<Payment> findByOrderCode(String orderCode) {
+		return paymentRepository.findByOrderCode(orderCode);
 	}
 
 	@Override

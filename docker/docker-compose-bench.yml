@@ -1,0 +1,250 @@
+# ============================================================================
+# Kafka A/B 부하 테스트 환경 — t3.large (2 vCPU / 8 GiB) 재현
+#
+# 실행:  docker compose -f docker/docker-compose-bench.yml up -d
+# 종료:  docker compose -f docker/docker-compose-bench.yml down
+#
+# ── 자원 예산 ──────────────────────────────────────────────────────────────
+# SUT(측정 대상) 합계 = 2.00 CPU / 5.1 GiB  ← t3.large 재현
+#   mysql 0.50 / 1.4g   kafka 0.40 / 1.2g   commerce 0.65 / 1.3g   payments 0.45 / 1.2g
+#
+# 관측 스택은 예산 밖 (0.6 CPU / 1.1 GiB)
+#   프로덕션 t3.large 에 Prometheus/Grafana 가 같이 떠 있었다고 가정하면 SUT 예산을
+#   갉아먹어 측정이 왜곡된다. 관측 오버헤드를 의도적으로 분리한 것이며, 결과 문서에
+#   "이탈 사항"으로 명시할 것.
+#
+# ⚠️ 부하 생성기(k6)는 이 compose 밖에서 실행한다.
+#    같은 예산 안에서 돌리면 §6.5 "회차 무효 조건"에 바로 걸린다.
+#
+# ⚠️ Docker Desktop 총 메모리가 8GB 이므로, 측정 전 무관한 컨테이너를 반드시 정지할 것.
+# ============================================================================
+
+name: dbay-bench
+
+services:
+
+  # ── SUT: 데이터 계층 ──────────────────────────────────────────────────────
+  mysql:
+    image: mysql:8.0
+    container_name: bench-mysql
+    command:
+      - --innodb-buffer-pool-size=512M
+      - --max-connections=200
+      - --slow-query-log=1
+      - --long-query-time=1
+      - --innodb-flush-log-at-trx-commit=1
+      - --character-set-server=utf8mb4
+    environment:
+      MYSQL_ROOT_PASSWORD: R00t!2025@Secure1
+      MYSQL_USER: mysqlId
+      MYSQL_PASSWORD: mysqlPwd
+      MYSQL_DATABASE: dbay_db
+      TZ: Asia/Seoul
+    ports:
+      - "13306:3306"          # 로컬 개발용 3306 과 충돌 방지
+    volumes:
+      - bench-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-umysqlId", "-pmysqlPwd"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 1400M
+
+  kafka:
+    image: apache/kafka:latest
+    container_name: bench-kafka
+    ports:
+      - "19092:9092"          # 로컬 개발용 9092 와 충돌 방지
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "controller,broker"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9091"
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9090,CONTROLLER://0.0.0.0:9091,EXTERNAL://0.0.0.0:9092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9090,EXTERNAL://localhost:19092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_HEAP_OPTS: "-Xms384m -Xmx384m"
+      CLUSTER_ID: "ZWU1Y2JiNDctNDg3ZC00ZjY3LWI3MmE"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka:9090 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.40'
+          memory: 1200M
+
+  # ── SUT: 애플리케이션 계층 ────────────────────────────────────────────────
+  # 사전 조건: ./gradlew :commerce:bootJar :payments:bootJar
+  payments:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile-bench
+      args:
+        APP_DIR: payments
+    container_name: bench-payments
+    environment:
+      SPRING_PROFILES_ACTIVE: bench
+      JAVA_OPTS: "-Xms512m -Xmx512m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+AlwaysPreTouch -XX:MaxMetaspaceSize=192m -XX:MaxDirectMemorySize=128m -XX:ReservedCodeCacheSize=128m -Xss512k -XX:+ExitOnOutOfMemoryError -Duser.timezone=Asia/Seoul"
+      BENCH_MYSQL_HOST: mysql
+      BENCH_KAFKA: kafka:9090
+      BENCH_PARTITIONS: "${BENCH_PARTITIONS:-3}"
+      # 예치금 이력 저장 전략: join(기본, 커넥션 1개) | after-commit(커넥션 2개)
+      PAYMENTS_HISTORY_STRATEGY: "${PAYMENTS_HISTORY_STRATEGY:-join}"
+    ports:
+      - "8085:8085"
+    depends_on:
+      mysql: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8085/actuator/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.45'
+          memory: 1300M
+
+  commerce:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile-bench
+      args:
+        APP_DIR: commerce
+    container_name: bench-commerce
+    environment:
+      SPRING_PROFILES_ACTIVE: bench
+      JAVA_OPTS: "-Xms512m -Xmx512m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+AlwaysPreTouch -XX:MaxMetaspaceSize=192m -XX:MaxDirectMemorySize=128m -XX:ReservedCodeCacheSize=128m -Xss512k -XX:+ExitOnOutOfMemoryError -Duser.timezone=Asia/Seoul"
+      BENCH_MYSQL_HOST: mysql
+      BENCH_KAFKA: kafka:9090
+      BENCH_PAYMENT_URL: http://payments:8085
+      BENCH_PARTITIONS: "${BENCH_PARTITIONS:-3}"
+      # ▼ Arm 스위치 — 회차마다 이 두 개만 바꾼다
+      BENCH_PAYMENT_STRATEGY: "${BENCH_PAYMENT_STRATEGY:-feign}"
+      BENCH_POSTPROCESS_STRATEGY: "${BENCH_POSTPROCESS_STRATEGY:-kafka}"
+      # 비동기 결제의 잔액 사전 확인 (설계 §7). 켜면 접수 경로에 Feign 호출이 하나 늘어
+      # A/B 측정이 오염되므로 기본값은 false 다.
+      BENCH_PRE_CHECK_BALANCE: "${BENCH_PRE_CHECK_BALANCE:-false}"
+      # Tomcat 커넥션 수용 한계. 기본 200 은 t3.large 재현을 위한 의도적 제약이다.
+      # 스파이크 측정에서 이 값이 먼저 걸리면 애플리케이션 차이가 통째로 묻히므로,
+      # 그 영향을 격리하는 회차에서만 올린다.
+      SERVER_TOMCAT_MAX_CONNECTIONS: "${BENCH_MAX_CONNECTIONS:-200}"
+      SERVER_TOMCAT_ACCEPT_COUNT: "${BENCH_ACCEPT_COUNT:-100}"
+    ports:
+      - "8081:8081"
+    depends_on:
+      mysql: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+      payments: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/actuator/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.65'
+          memory: 1400M
+
+  # ── 관측 스택 (SUT 예산 밖) ───────────────────────────────────────────────
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:latest
+    container_name: bench-kafka-exporter
+    command: ["--kafka.server=kafka:9090"]
+    ports:
+      - "9308:9308"
+    depends_on:
+      kafka: { condition: service_healthy }
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.10'
+          memory: 128M
+
+  prometheus:
+    image: prom/prometheus:v3.3.0
+    container_name: bench-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus-bench.yml:/etc/prometheus/prometheus.yml:ro
+      - bench-prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'
+      - '--web.enable-lifecycle'
+      - '--web.enable-remote-write-receiver'   # ← k6 지표 수신용 (§6.2-②)
+    deploy:
+      resources:
+        limits:
+          cpus: '0.30'
+          memory: 600M
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    container_name: bench-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - bench-grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+    deploy:
+      resources:
+        limits:
+          cpus: '0.20'
+          memory: 500M
+
+  # ── 부하 생성기 (SUT 예산 밖, 자원 제한 없음) ──────────────────────────────
+  # 의도적으로 deploy.resources.limits 를 두지 않는다.
+  # 부하 생성기가 throttle 되면 목표 도착률을 못 만들어 측정 자체가 무효가 된다(§6.5).
+  # VM 은 18 CPU 이고 SUT 합계는 2.0 CPU 이므로, k6 는 남는 16 CPU 를 쓴다.
+  #
+  # profiles 로 묶어 두어 `up -d` 시 자동 기동하지 않는다.
+  # 실행: ./bench-scripts/run-k6.sh  (또는 docker compose ... run --rm k6 run /scripts/order-burst.js)
+  k6:
+    image: grafana/k6:latest
+    container_name: bench-k6
+    profiles: ["tools"]
+    # compose 기본 네트워크에 붙으므로 서비스명으로 접근한다:
+    #   commerce:8081, prometheus:9090  (호스트 포트 매핑을 거치지 않아 홉이 하나 줄어든다)
+    volumes:
+      - ../k6-scripts:/scripts:ro
+      - ../k6-scripts/results:/scripts/results   # 결과만 쓰기 가능하게 덮어쓴다
+    environment:
+      K6_PROMETHEUS_RW_SERVER_URL: "http://prometheus:9090/api/v1/write"
+      K6_PROMETHEUS_RW_TREND_STATS: "p(50),p(95),p(99),max"
+
+
+volumes:
+  bench-mysql-data:
+  bench-prometheus-data:
+  bench-grafana-data:

@@ -13,6 +13,8 @@ public interface CartItemJpaRepository extends JpaRepository<CartItemEntity, Lon
 
 	boolean existsByCartEntityAndProductCode(CartEntity cartEntity, String productCode);
 
+	long countByCartEntity(CartEntity cartEntity);
+
     @Modifying
     @Query("""
 		DELETE FROM CartItemEntity ci

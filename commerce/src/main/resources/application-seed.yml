@@ -1,0 +1,49 @@
+spring:
+  application:
+    name: commerce
+
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/dbay_db?serverTimezone=Asia/Seoul&characterEncoding=UTF-8
+    username: mysqlId
+    password: mysqlPwd
+
+  jpa:
+    hibernate:
+      naming:
+        physical-strategy: org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl
+      ddl-auto: update
+    properties:
+      hibernate:
+        default_batch_fetch_size: 500
+        format_sql: true
+
+  # 실제 연결 시도하는 것만 끄기
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.elasticsearch.ElasticsearchRestClientAutoConfiguration
+      - org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
+      - org.springframework.boot.autoconfigure.batch.BatchAutoConfiguration
+      - org.springframework.ai.autoconfigure.vectorstore.elasticsearch.ElasticsearchVectorStoreAutoConfiguration
+
+  # Spring AI + Elasticsearch
+  ai:
+    vectorstore:
+      elasticsearch:
+        initialize-schema: false
+
+  # Kafka
+  kafka:
+    enabled: false
+    listener:
+      auto-startup: false
+
+# Eureka
+eureka:
+  client:
+    enabled: false
+
+logging:
+  level:
+    root: WARN
+    io.devground.dbay.support: INFO

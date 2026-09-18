@@ -133,6 +133,21 @@ custom:
       topic-partitions: 1
       topic-replications: 1
 
+order:
+  payment:
+    # feign : 동기 호출. 응답 시점에 결제가 확정돼 있다.
+    # kafka : 커맨드 발행 후 즉시 반환. 주문은 PAYMENT_PENDING 으로 남고 결과는 이벤트로 온다.
+    strategy: ${ORDER_PAYMENT_STRATEGY:feign}
+    timeout-seconds: 300          # 이 시간을 넘긴 PAYMENT_PENDING 은 회수 대상
+    reconcile-batch-size: 100     # 회수 주기당 최대 건수 (결제 경로와 커넥션 경합 방지)
+    reconcile-cron: "0 */5 * * * *"
+    # 발행 전 잔액 확인 — 켜면 접수 경로에 원격 호출이 하나 는다(비동기화 이득을 일부 되돌림).
+    # "잔액 부족을 즉시 알려달라" 는 요구가 분명할 때만 켠다.
+    pre-check-balance: false
+
+external:
+  payment-url: http://localhost:8085
+
 logging:
   level:
     org.hibernate.SQL: INFO

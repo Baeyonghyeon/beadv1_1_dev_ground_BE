@@ -1,0 +1,158 @@
+# ============================================================================
+# bench 프로파일 — Kafka 도입 근거 A/B 부하 테스트 전용 (payments)
+#
+# 설계 문서: claude-kafka-test-설계.md
+# 사전 작업: claude-kafka-test-사전작업.md
+#
+# ⚠️ local 프로파일과의 가장 큰 차이: H2 파일 DB 가 아니라 commerce 와 동일한 MySQL 을 쓴다.
+#    (P0-5 — DB 특성이 다르면 두 모듈의 측정값을 나란히 놓을 수 없다)
+# ============================================================================
+
+spring:
+  application:
+    name: payments
+
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://${BENCH_MYSQL_HOST:mysql}:${BENCH_MYSQL_PORT:3306}/dbay_db?serverTimezone=Asia/Seoul&characterEncoding=UTF-8&rewriteBatchedStatements=true
+    username: mysqlId
+    password: mysqlPwd
+    hikari:
+      # ▼ 임계점을 만들기 위한 의도적 제약 (설계 문서 §3.4)
+      maximum-pool-size: 10
+      minimum-idle: 10
+      connection-timeout: 3000
+      pool-name: payments-hikari
+      register-mbeans: true
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+      naming:
+        physical-strategy: org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl
+    open-in-view: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
+        default_batch_fetch_size: 500
+        format_sql: false
+        jdbc:
+          time_zone: Asia/Seoul
+
+  batch:
+    jdbc:
+      initialize-schema: always
+    job:
+      enabled: false                # 정산 배치는 이번 실험 대상 아님
+
+  kafka:
+    bootstrap-servers: ${BENCH_KAFKA:kafka:9090}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+      properties:
+        delivery.timeout.ms: 120000
+        linger.ms: 0
+        request.timeout.ms: 30000
+        enable.idempotence: true
+        allow.auto.create.topics: false
+    consumer:
+      group-id: ${BENCH_PAYMENTS_GROUP:payments-bench}
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: io.devground.payments.*, io.devground.core.*
+        allow.auto.create.topics: false
+
+  cloud:
+    discovery:
+      enabled: false
+
+eureka:
+  client:
+    enabled: false
+    register-with-eureka: false
+    fetch-registry: false
+
+server:
+  port: 8085
+  tomcat:
+    threads:
+      max: 50
+      min-spare: 10
+    accept-count: 100
+    max-connections: 200
+    connection-timeout: 3s
+    mbeanregistry:
+      enabled: true
+
+# ============================================================================
+# 관측 — commerce 와 동일한 라벨/히스토그램 설정 (같은 대시보드에서 비교하기 위함)
+# ============================================================================
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: payments
+      service: payments
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+      slo:
+        http.server.requests: 50ms,100ms,300ms,1s,3s
+      minimum-expected-value:
+        http.server.requests: 1ms
+      maximum-expected-value:
+        http.server.requests: 30s
+
+custom:
+  kafka:
+    config:
+      topic-partitions: ${BENCH_PARTITIONS:3}
+      topic-replications: 1
+  batch:
+    chunk:
+      size: 100
+    skip:
+      limit: 10
+    retry:
+      limit: 3
+  settlement:
+    rate: 0.95
+    cron: "-"                       # 정산 스케줄러 비활성화
+  toss:
+    # 외부 결제(Toss)는 이번 실험 범위 밖 — 호출되지 않지만 주입은 필요하므로 더미
+    secretKey: bench-not-used
+    clientKey: bench-not-used
+    confirm-url: "http://localhost:19999/never-called"
+
+payments:
+  history:
+    # join        : 결제 트랜잭션에 합류 — 커넥션 1개, 이력 실패 시 결제도 롤백
+    # after-commit: 커밋 후 REQUIRES_NEW — 커넥션 2개, 이력 실패해도 결제는 유지
+    strategy: ${PAYMENTS_HISTORY_STRATEGY:join}
+
+external:
+  openfeign-url: ${BENCH_PAYMENT_URL:http://payments:8085}
+
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+
+logging:
+  level:
+    root: WARN
+    io.devground: INFO
+    org.hibernate.SQL: WARN
+    org.apache.kafka: WARN
+    org.springframework.batch: WARN

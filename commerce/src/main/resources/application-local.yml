@@ -5,7 +5,6 @@ spring:
     username: mysqlId
     password: mysqlPwd
 
-
   elasticsearch:
     uris: http://localhost:9200
 
@@ -39,3 +38,5 @@ eureka:
     prefer-ip-address: false
     hostname: localhost
     non-secure-port: ${server.port}
+external:
+  payment-url: http://localhost:8085
